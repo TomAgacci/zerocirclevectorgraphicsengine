@@ -1,0 +1,1 @@
+python3 -c "import math; pulse=lambda t,x,y,u:(math.sin(math.atan2(y,x)+u[0]*t)+math.sin(2*math.atan2(y,x)+u[1]*t+math.hypot(x,y))+math.sin(3*math.atan2(y,x)+u[2]*t+math.hypot(x,y)**2)); print(pulse(1.0,0.5,0.5,(1,2,3)))"
