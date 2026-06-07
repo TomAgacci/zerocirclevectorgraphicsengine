@@ -1,0 +1,1 @@
+python3 -c "import math;P=lambda t,x,y,u:(math.sin(math.atan2(y,x)+u[0]*t)+math.sin(2*math.atan2(y,x)+u[1]*t+math.hypot(x,y))+math.sin(3*math.atan2(y,x)+u[2]*t+math.hypot(x,y)**2));u=(1,2,3);t=1;chars=' .:-=+*#%@';[print(''.join(chars[int((P(t,(i-20)/10,(j-10)/10,u)+3)/6*9)] for i in range(40))) for j in range(20)]"
