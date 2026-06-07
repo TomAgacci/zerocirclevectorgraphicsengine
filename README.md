@@ -1,5 +1,14 @@
 Licensed Under Creative Commonse No Derivatives Non-Commercial Open-Source
 
+This was created with zero circle math which measures pi as an achor for zero. It's got its own compression called
+pulse which uses resistance to read information through a pulse which runs on a nanoscope timer.
+
+This will generate any graphics, for any computer, but the minimum would probably be, a wise voltage to
+avoid stress on the power grid. Something like a first generation i3 on intel gma graphics would still
+produce a decent result.
+
+All you need to do is follow the terminal commands with the files. There is little documentation ATM but people
+Are very creative.
 
 ZeroCircleEngine/
 ├── core/
