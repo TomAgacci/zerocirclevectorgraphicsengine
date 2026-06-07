@@ -1,0 +1,17 @@
+mport math
+
+def zcab_pulse(t, opcode, x, y):
+    """
+    Pulse-compressed ZCAB:
+    t      : time / tick
+    opcode : integer 0–255
+    x, y   : abstract state coords (register-space embedding)
+    """
+    o = opcode / 255.0
+    r = math.hypot(x, y)
+    a = math.atan2(y, x)
+    return (
+        math.sin(o + t) +
+        math.sin(2*o + 2*t + r) +
+        math.sin(3*o + 3*t + r*r + a)
+    )
