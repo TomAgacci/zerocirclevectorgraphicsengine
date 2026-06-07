@@ -1,0 +1,435 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>3D Engine – Animated Park</title>
+<style>
+  html,body{
+    margin:0;
+    padding:0;
+    background:#111;
+    overflow:hidden;
+  }
+  canvas{ display:block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const c = document.getElementById("c");
+const x = c.getContext("2d");
+
+// --- CAMERA ---
+let cam = {
+  x:0, y:1.2, z:-8,
+  yaw:0,
+  pitch:0
+};
+
+// --- INPUT ---
+let keys = {};
+addEventListener("keydown", e=> keys[e.key.toLowerCase()] = true);
+addEventListener("keyup",   e=> keys[e.key.toLowerCase()] = false);
+
+// --- MOUSE LOOK ---
+let pointerLocked = false;
+
+c.addEventListener("click", ()=>{
+  c.requestPointerLock();
+});
+
+document.addEventListener("pointerlockchange", ()=>{
+  pointerLocked = (document.pointerLockElement === c);
+});
+
+document.addEventListener("mousemove", e=>{
+  if(!pointerLocked) return;
+
+  cam.yaw   += e.movementX * 0.002;
+  cam.pitch -= e.movementY * 0.002;
+
+  cam.pitch = Math.max(-1.2, Math.min(1.2, cam.pitch));
+});
+
+// --- BASIC CUBE ---
+function makeCube(cx,cy,cz,sx,sy,sz){
+  const pts = [
+    {x:-sx,y:-sy,z: sz},{x: sx,y:-sy,z: sz},{x: sx,y: sy,z: sz},{x:-sx,y: sy,z: sz},
+    {x:-sx,y:-sy,z:-sz},{x: sx,y:-sy,z:-sz},{x: sx,y: sy,z:-sz},{x:-sx,y: sy,z:-sz}
+  ];
+  pts.forEach(p=>{ p.x+=cx; p.y+=cy; p.z+=cz; });
+  return [
+    [pts[0],pts[1],pts[2],pts[3]],
+    [pts[4],pts[5],pts[6],pts[7]],
+    [pts[4],pts[0],pts[3],pts[7]],
+    [pts[1],pts[5],pts[6],pts[2]],
+    [pts[4],pts[5],pts[1],pts[0]],
+    [pts[3],pts[2],pts[6],pts[7]]
+  ];
+}
+
+// --- CYLINDER (π-based polygonal) ---
+function makeCylinder(cx, cy, cz, radius, height, sides){
+  const top = [];
+  const bottom = [];
+
+  for(let i=0; i<sides; i++){
+    const theta = (i / sides) * Math.PI * 2;
+    const x = Math.cos(theta) * radius;
+    const z = Math.sin(theta) * radius;
+
+    top.push({ x: cx + x, y: cy + height/2, z: cz + z });
+    bottom.push({ x: cx + x, y: cy - height/2, z: cz + z });
+  }
+
+  const faces = [];
+
+  for(let i=0; i<sides; i++){
+    const j = (i+1) % sides;
+    faces.push([
+      top[i], top[j],
+      bottom[j], bottom[i]
+    ]);
+  }
+
+  for(let i=1; i<sides-1; i++){
+    faces.push([
+      top[0], top[i], top[i+1]
+    ]);
+  }
+
+  for(let i=1; i<sides-1; i++){
+    faces.push([
+      bottom[0], bottom[i+1], bottom[i]
+    ]);
+  }
+
+  return faces;
+}
+
+// --- PLANE (ground / path) ---
+function makePlane(cx, cy, cz, sx, sz, rotY=0){
+  const pts = [
+    {x:-sx,y:0,z:-sz},
+    {x: sx,y:0,z:-sz},
+    {x: sx,y:0,z: sz},
+    {x:-sx,y:0,z: sz}
+  ];
+  if(rotY !== 0){
+    const c = Math.cos(rotY), s = Math.sin(rotY);
+    pts.forEach(p=>{
+      const x0 = p.x, z0 = p.z;
+      p.x = x0*c - z0*s;
+      p.z = x0*s + z0*c;
+    });
+  }
+  pts.forEach(p=>{ p.x+=cx; p.y+=cy; p.z+=cz; });
+  return [[pts[0],pts[1],pts[2],pts[3]]];
+}
+
+// --- ZERO-CIRCLE PULSE + ENGINE POINT (for fountain) ---
+function P(t, x, y, u){
+  const r = Math.hypot(x, y);
+  const a = Math.atan2(y, x);
+  const [u0, u1, u2] = u;
+  return (
+    Math.sin(a + u0*t) +
+    Math.sin(2*a + u1*t + r) +
+    Math.sin(3*a + u2*t + r*r)
+  );
+}
+
+function enginePoint(t, x, y, u_def=[1,2,3], u_hgt=[3,2,1]){
+  let r = Math.hypot(x, y) + 0.2 * P(t, x, y, u_def);
+  let a = Math.atan2(y, x);
+  let x2 = r * Math.cos(a);
+  let y2 = r * Math.sin(a);
+  let h  = 0.5 * P(t, x, y, u_hgt);
+  return { x:x2, y:y2, z:h };
+}
+
+function makeZeroCircleSurface(cx, cy, cz, scale, gridN, t){
+  const faces = [];
+  const pts = [];
+
+  for(let iy=0; iy<=gridN; iy++){
+    const row = [];
+    const vy = (iy / gridN) * 2 - 1;
+    for(let ix=0; ix<=gridN; ix++){
+      const vx = (ix / gridN) * 2 - 1;
+      const p = enginePoint(t, vx, vy);
+      row.push({
+        x: cx + p.x * scale,
+        y: cy + p.z * scale,
+        z: cz + p.y * scale
+      });
+    }
+    pts.push(row);
+  }
+
+  for(let iy=0; iy<gridN; iy++){
+    for(let ix=0; ix<gridN; ix++){
+      const p00 = pts[iy][ix];
+      const p10 = pts[iy][ix+1];
+      const p11 = pts[iy+1][ix+1];
+      const p01 = pts[iy+1][ix];
+      faces.push([p00, p10, p11, p01]);
+    }
+  }
+
+  return faces;
+}
+
+// --- TREE (trunk cylinder + foliage cube) ---
+function makeTree(cx, cz){
+  const trunk = makeCylinder(cx, 0.75, cz, 0.12, 1.5, 16);
+  const foliage = makeCube(cx, 1.9, cz, 0.7, 0.6, 0.7);
+  return { 
+    faces:[...trunk, ...foliage], 
+    type:"tree",
+    cx, cz,
+    seed: Math.random()*10
+  };
+}
+
+// --- BENCH ---
+function makeBench(cx, cy, cz){
+  const faces = [];
+  faces.push(...makeCube(cx, cy, cz, 0.9, 0.05, 0.3));
+  faces.push(...makeCube(cx, cy+0.35, cz-0.22, 0.9, 0.35, 0.05));
+  faces.push(...makeCube(cx-0.75, cy-0.25, cz+0.25, 0.05, 0.25, 0.05));
+  faces.push(...makeCube(cx+0.75, cy-0.25, cz+0.25, 0.05, 0.25, 0.05));
+  faces.push(...makeCube(cx-0.75, cy-0.25, cz-0.25, 0.05, 0.25, 0.05));
+  faces.push(...makeCube(cx+0.75, cy-0.25, cz-0.25, 0.05, 0.25, 0.05));
+  return { faces, type:"bench" };
+}
+
+// --- WORLD OBJECTS ---
+let world = [];
+
+// ground
+world.push({ faces: makePlane(0, -0.5, 10, 20, 20), type:"ground" });
+
+// path
+world.push({ faces: makePlane(0, -0.49, 10, 1.2, 20), type:"path" });
+
+// trees along left
+for(let i=0;i<6;i++){
+  world.push(makeTree(-3.5, 5 + i*3));
+}
+// trees along right
+for(let i=0;i<6;i++){
+  world.push(makeTree(3.5, 5 + i*3));
+}
+
+// bench
+world.push(makeBench(0, -0.1, 6.5));
+
+// fountain (ZeroCircle surface, generated per frame)
+world.push({
+  type:"fountain",
+  cx:0,
+  cy:-0.3,
+  cz:8,
+  scale:0.6,
+  grid:24,
+  faces:[]
+});
+
+// --- CAMERA SPACE TRANSFORM ---
+function worldToCamera(p){
+  let xw = p.x - cam.x;
+  let yw = p.y - cam.y;
+  let zw = p.z - cam.z;
+
+  let cy = Math.cos(cam.yaw);
+  let sy = Math.sin(cam.yaw);
+  let x1 = xw*cy - zw*sy;
+  let z1 = xw*sy + zw*cy;
+
+  let cp = Math.cos(cam.pitch);
+  let sp = Math.sin(cam.pitch);
+  let y1 = yw*cp - z1*sp;
+  let z2 = yw*sp + z1*cp;
+
+  return { x:x1, y:y1, z:z2 };
+}
+
+// --- PROJECTION ---
+const FOV = Math.PI / 3;
+
+function project(p){
+  const z = Math.max(p.z, 0.3);
+  const aspect = c.width / c.height;
+  const f = Math.tan(FOV / 2);
+
+  const xN = (p.x / (z * f)) / aspect;
+  const yN = p.y / (z * f);
+
+  if (Math.abs(xN) > 1 || Math.abs(yN) > 1) return null;
+
+  return {
+    x: (xN * 0.5 + 0.5) * c.width,
+    y: (-yN * 0.5 + 0.5) * c.height
+  };
+}
+
+// --- DEPTH SORT ---
+function depthKey(face){
+  let z=0;
+  face.forEach(p=> z+=p.z );
+  return z / face.length;
+}
+
+// --- SHADING ---
+let sunAngle = 0;
+
+function shadeColor(hex, s){
+  const r = Math.floor(parseInt(hex.slice(1,3),16)*s);
+  const g = Math.floor(parseInt(hex.slice(3,5),16)*s);
+  const b = Math.floor(parseInt(hex.slice(5,7),16)*s);
+  return `rgb(${r},${g},${b})`;
+}
+
+// --- DRAW FACE ---
+function drawFace(face, baseColor){
+  const sp = [];
+  for(let i=0;i<face.length;i++){
+    const pr = project(face[i]);
+    if(!pr) return;
+    sp.push(pr);
+  }
+
+  const A = face[0], B = face[1], C = face[2];
+  const U = {x:B.x-A.x, y:B.y-A.y, z:B.z-A.z};
+  const V = {x:C.x-A.x, y:C.y-A.y, z:C.z-A.z};
+  const Nx = U.y*V.z - U.z*V.y;
+  const Ny = U.z*V.x - U.x*V.z;
+  const Nz = U.x*V.y - U.y*V.x;
+
+  const sx = Math.cos(sunAngle);
+  const sy = -0.4;
+  const sz = Math.sin(sunAngle);
+
+  const dot = Math.max(0, (Nx*sx + Ny*sy + Nz*sz) / Math.hypot(Nx,Ny,Nz));
+  const shade = 0.4 + dot * 0.6;
+  const color = shadeColor(baseColor, shade);
+
+  x.beginPath();
+  x.moveTo(sp[0].x, sp[0].y);
+  for(let i=1;i<sp.length;i++) x.lineTo(sp[i].x, sp[i].y);
+  x.closePath();
+  x.fillStyle = color;
+  x.fill();
+}
+
+// --- ANIMATION STATE ---
+let windTime = 0;
+
+// --- DRAW ---
+function draw(){
+  x.fillStyle = "#111";
+  x.fillRect(0,0,c.width,c.height);
+
+  const t = performance.now()*0.001;
+
+  // regenerate fountain surface
+  world.forEach(obj=>{
+    if(obj.type === "fountain"){
+      obj.faces = makeZeroCircleSurface(obj.cx, obj.cy, obj.cz, obj.scale, obj.grid, t);
+    }
+  });
+
+  // tree sway
+  world.forEach(obj=>{
+    if(obj.type === "tree"){
+      const sway = Math.sin(windTime * 1.2 + obj.seed) * 0.08;
+      obj.faces.forEach(face=>{
+        face.forEach(p=>{
+          const x0 = p.x - obj.cx;
+          const z0 = p.z - obj.cz;
+          p.x = obj.cx + x0 * Math.cos(sway) - z0 * Math.sin(sway);
+          p.z = obj.cz + x0 * Math.sin(sway) + z0 * Math.cos(sway);
+        });
+      });
+    }
+  });
+
+  let allFaces = [];
+
+  world.forEach(obj=>{
+    obj.faces.forEach(f=>{
+      const camFace = f.map(worldToCamera);
+      allFaces.push({
+        face: camFace,
+        key: depthKey(camFace),
+        type: obj.type
+      });
+    });
+  });
+
+  allFaces.sort((a,b)=> b.key - a.key);
+
+  allFaces.forEach(F=>{
+    let base = "#888888";
+    if(F.type === "ground") base = "#1f3b1f";
+    else if(F.type === "path") base = "#555555";
+    else if(F.type === "tree") base = "#2f7a2f";
+    else if(F.type === "bench") base = "#b07a3a";
+    else if(F.type === "fountain") base = "#4faaff";
+    drawFace(F.face, base);
+  });
+
+  x.fillStyle = "#ccc";
+  x.font = "16px sans-serif";
+  x.textAlign = "center";
+  x.fillText("WASD + Mouse Look – Animated Park (Trees, Sun, Fountain)", c.width/2, 26);
+}
+
+// --- UPDATE CAMERA POSITION ---
+function update(dt){
+  const speed = 4 * dt;
+
+  if(keys['w']){
+    cam.x += Math.sin(cam.yaw) * speed;
+    cam.z += Math.cos(cam.yaw) * speed;
+  }
+  if(keys['s']){
+    cam.x -= Math.sin(cam.yaw) * speed;
+    cam.z -= Math.cos(cam.yaw) * speed;
+  }
+
+  if(keys['a']){
+    cam.x -= Math.cos(cam.yaw) * speed;
+    cam.z += Math.sin(cam.yaw) * speed;
+  }
+  if(keys['d']){
+    cam.x += Math.cos(cam.yaw) * speed;
+    cam.z -= Math.sin(cam.yaw) * speed;
+  }
+
+  windTime += dt;
+  sunAngle += dt * 0.2;
+}
+
+// --- LOOP ---
+let last = performance.now();
+function loop(t){
+  const dt = (t-last)/1000;
+  last = t;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+// --- INIT ---
+function resize(){
+  c.width = innerWidth;
+  c.height = innerHeight;
+}
+addEventListener("resize", resize);
+resize();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
