@@ -1,0 +1,13 @@
+def deform_and_height(t, x, y, u_def, u_hgt):
+    p_def = pulse(t, x, y, u_def)
+    p_hgt = pulse(t, x, y, u_hgt)
+
+    # deformation in radius
+    r = math.hypot(x, y)
+    a = math.atan2(y, x)
+    r2 = r + 0.2 * p_def
+    x2, y2 = r2 * math.cos(a), r2 * math.sin(a)
+
+    # height from pulse
+    h = 0.5 * p_hgt
+    return x2, y2, h
