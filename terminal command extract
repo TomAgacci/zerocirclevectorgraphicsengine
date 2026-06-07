@@ -1,0 +1,24 @@
+python3 - << 'EOF'
+import math
+
+# Zero‑Circle Pulse (entire engine compressed)
+def P(t, x, y, u):
+    r = math.hypot(x, y)
+    a = math.atan2(y, x)
+    u0, u1, u2 = u
+    return (
+        math.sin(a + u0*t) +
+        math.sin(2*a + u1*t + r) +
+        math.sin(3*a + u2*t + r*r)
+    )
+
+# Engine expansion: deformation + height + extrusion
+def engine_point(t, x, y, u_def=(1,2,3), u_hgt=(3,2,1)):
+    r = math.hypot(x, y) + 0.2 * P(t, x, y, u_def)
+    a = math.atan2(y, x)
+    x2, y2 = r*math.cos(a), r*math.sin(a)
+    h = 0.5 * P(t, x, y, u_hgt)
+    return x2, y2, h
+
+print("Extracted engine output:", engine_point(1.0, 0.5, 0.5))
+EOF
