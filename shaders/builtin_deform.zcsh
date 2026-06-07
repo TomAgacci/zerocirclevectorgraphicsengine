@@ -1,0 +1,5 @@
+// ZeroCircle built-in deformation shader
+deform(x, y, t):
+    r = sqrt(x*x + y*y)
+    a = atan2(y, x)
+    return sin(a + t) + sin(2*a + t + r) + sin(3*a + t + r*r)
