@@ -1,0 +1,1 @@
+python3 -c "import math;Z=lambda t,o,x,y:(math.sin(o+t)+math.sin(2*o+2*t+math.hypot(x,y))+math.sin(3*o+3*t+math.hypot(x,y)**2+math.atan2(y,x)));[print(f'opcode {i:02X}:',Z(1,i/255,0.5,0.5)) for i in range(256)]"
