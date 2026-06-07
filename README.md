@@ -1,4 +1,4 @@
-Licensed Under Creative Commonse No Derivatives Non-Commercial Open-Source
+Licensed Under Creative Commons No Derivatives Non-Commercial Open-Source
 
 This was created with zero circle math which measures pi as an achor for zero. It's got its own compression called
 pulse which uses resistance to read information through a pulse which runs on a nanoscope timer.
