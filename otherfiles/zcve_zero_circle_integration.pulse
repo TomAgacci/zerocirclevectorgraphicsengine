@@ -1,0 +1,120 @@
+# ZeroCircleEngine Integration Pulse Bundle
+# Contains: material, node, VM adapter, editor tool
+
+[file:materials/zcve_zero_circle_material.cpp]
+#include "zcve_zero_circle_material.h"
+#include "../core/zcve_zero_circle.h"
+#include "../vm/zcve_vm.h"
+#include "../shaders/shader_optimizer.h"
+
+ZCVEZeroCircleMaterial::ZCVEZeroCircleMaterial() {
+    params.u_def[0] = 1.0f;
+    params.u_def[1] = 2.0f;
+    params.u_def[2] = 3.0f;
+
+    params.u_hgt[0] = 3.0f;
+    params.u_hgt[1] = 2.0f;
+    params.u_hgt[2] = 1.0f;
+}
+
+ZCPoint ZCVEZeroCircleMaterial::evaluate(float t, float x, float y) const {
+    return ZC_enginePoint(t, x, y, params.u_def, params.u_hgt);
+}
+
+void ZCVEZeroCircleMaterial::bindToShader(ZCShader& shader) const {
+    shader.setVec3("zc_u_def", params.u_def);
+    shader.setVec3("zc_u_hgt", params.u_hgt);
+}
+
+void ZCVEZeroCircleMaterial::compile(ZCVEVM& vm) {
+    if (!zcab_source.empty()) {
+        vm.compileProgram(zcab_source, compiled_program);
+    }
+}
+
+[file:materials/zcve_zero_circle_node.cpp]
+#include "zcve_zero_circle_node.h"
+#include "../core/zcve_zero_circle.h"
+
+ZCVEZeroCircleNode::ZCVEZeroCircleNode() {
+    name = "ZeroCircleDeform";
+    addInput("x");
+    addInput("y");
+    addInput("time");
+    addOutput("vec3");
+}
+
+ZCGraphValue ZCVEZeroCircleNode::evaluate(const ZCGraphContext& ctx) {
+    float x = ctx.getInput("x");
+    float y = ctx.getInput("y");
+    float t = ctx.getInput("time");
+
+    ZCPoint p = ZC_enginePoint(t, x, y);
+    return ZCGraphValue::Vec3(p.x, p.y, p.z);
+}
+
+void ZCVEZeroCircleNode::generateGLSL(std::ostream& out) const {
+    out <<
+    "vec3 zc_enginePoint(float t, float x, float y) {\n"
+    "    float r = length(vec2(x,y)) + 0.2 * (sin(atan(y,x)+t) + sin(2.0*atan(y,x)+t+r) + sin(3.0*atan(y,x)+t+r*r));\n"
+    "    float a = atan(y,x);\n"
+    "    float px = r * cos(a);\n"
+    "    float py = r * sin(a);\n"
+    "    float pz = 0.5 * (sin(a+t) + sin(2.0*a+t+r) + sin(3.0*a+t+r*r));\n"
+    "    return vec3(px, pz, py);\n"
+    "}\n";
+}
+
+[file:vm/zcve_zero_circle_vm_adapter.cpp]
+#include "zcve_zero_circle_vm_adapter.h"
+#include "../core/zcve_zero_circle.h"
+
+void ZCVEZeroCircleVMAdapter::registerOpcodes(ZCVEVM& vm) {
+    vm.registerOpcode("ZC_PULSE", [](ZCVEVMState& st){
+        float t = st.pop();
+        float y = st.pop();
+        float x = st.pop();
+        float u2 = st.pop();
+        float u1 = st.pop();
+        float u0 = st.pop();
+        float u[3] = {u0, u1, u2};
+        st.push(ZC_P(t, x, y, u));
+    });
+
+    vm.registerOpcode("ZC_ENGINEPOINT", [](ZCVEVMState& st){
+        float t = st.pop();
+        float y = st.pop();
+        float x = st.pop();
+        ZCPoint p = ZC_enginePoint(t, x, y);
+        st.push(p.x);
+        st.push(p.y);
+        st.push(p.z);
+    });
+}
+
+void ZCVEZeroCircleVMAdapter::injectGlobals(ZCVEVM& vm) {
+    vm.setGlobal("ZC_PI", 3.1415926535f);
+    vm.setGlobal("ZC_TAU", 6.283185307f);
+}
+
+[file:tools/zcve_zero_circle_editor.cpp]
+#include "zcve_zero_circle_editor.h"
+#include "../materials/zcve_zero_circle_material.h"
+#include "../core/zcve_zero_circle.h"
+
+void ZCVEZeroCircleEditor::drawUI(ZCVEZeroCircleMaterial& mat) {
+    ImGui::Text("Zero Circle Material");
+    ImGui::SliderFloat3("u_def", mat.params.u_def, 0.0f, 6.0f);
+    ImGui::SliderFloat3("u_hgt", mat.params.u_hgt, 0.0f, 6.0f);
+    if (ImGui::Button("Preview Surface")) {
+        previewRequested = true;
+    }
+}
+
+void ZCVEZeroCircleEditor::renderPreview(float t) {
+    if (!previewRequested) return;
+    auto faces = ZC_buildPolarSurface(0,0,0,1.0f,32,64,t);
+    for (auto& f : faces) {
+        drawFace(f.a, f.b, f.c, f.d);
+    }
+}
