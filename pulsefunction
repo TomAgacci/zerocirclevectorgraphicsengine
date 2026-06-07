@@ -1,0 +1,11 @@
+import math
+
+def pulse(t, x, y, u):
+    r = math.hypot(x, y)
+    a = math.atan2(y, x)
+    u0, u1, u2 = u
+    return (
+        math.sin(a + u0 * t) +
+        math.sin(2 * a + u1 * t + r) +
+        math.sin(3 * a + u2 * t + r * r)
+    )
