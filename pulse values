@@ -1,0 +1,1 @@
+python3 -c "import math,time;P=lambda t,x,y,u:(math.sin(math.atan2(y,x)+u[0]*t)+math.sin(2*math.atan2(y,x)+u[1]*t+math.hypot(x,y))+math.sin(3*math.atan2(y,x)+u[2]*t+math.hypot(x,y)**2));x=y=0.5;u=(1,2,3);t=0;[print(P(t:=t+0.1,x,y,u)) or time.sleep(0.05) for _ in range(200)]"
