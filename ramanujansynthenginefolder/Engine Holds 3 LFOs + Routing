@@ -1,0 +1,2 @@
+RamanujanLFO lfo1, lfo2, lfo3;
+std::vector<ModRouting> modMatrix;
