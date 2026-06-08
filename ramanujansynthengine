@@ -1,0 +1,368 @@
+// RamanujanSynthEngine.cpp
+#include "RamanujanSynthEngine.hpp"
+#include <cmath>
+#include <algorithm>
+#include <map>
+
+// ─────────────────────────────────────────────
+// Internal DSP structs
+// ─────────────────────────────────────────────
+
+struct RamanujanMoogFilter {
+    float z[4] = {0,0,0,0};
+    float sampleRate = 48000.0f;
+
+    void setSampleRate(float sr) { sampleRate = sr; }
+
+    float process(float sample, float t, float cutoffBase, float cutoffMod) {
+        float cutoff = cutoffBase + cutoffMod * std::sin(2.0f * float(M_PI) * 0.13f * t);
+        float resonance = 0.65f;
+        float drive = 1.8f;
+        float omega = 2.0f * float(M_PI) * cutoff / sampleRate;
+
+        float v = std::tanh(sample * drive);
+
+        for (int s = 0; s < 4; ++s) {
+            float input = (s == 0 ? v - resonance * z[3] : z[s - 1]);
+            z[s] += omega * (std::tanh(input) - std::tanh(z[s]));
+        }
+
+        float drift = 0.02f * std::sin(2.0f * float(M_PI) * 0.07f * t + z[3] * 0.5f);
+        return z[3] + drift;
+    }
+};
+
+struct RamanujanVoice {
+    RamanujanMoogFilter filter;
+    float phase = 0.0f;
+    float env = 0.0f;
+    float gate = 0.0f;
+    float baseFreq = 220.0f;
+    float t = 0.0f;
+    float sampleRate = 48000.0f;
+    bool active = false;
+    int midiNote = -1;
+
+    void setSampleRate(float sr) { sampleRate = sr; filter.setSampleRate(sr); }
+
+    void noteOn(int note, float freq, float velocity) {
+        midiNote = note;
+        baseFreq = freq;
+        gate = velocity;
+        active = true;
+    }
+
+    void noteOff(int note) {
+        if (note == midiNote) gate = 0.0f;
+    }
+
+    float process() {
+        if (!active) return 0.0f;
+
+        float dt = 1.0f / sampleRate;
+
+        float attack = 0.01f, release = 0.3f;
+        float target = gate;
+        float tau = gate > 0.0f ? attack : release;
+        env += (target - env) * (1.0f - std::exp(-dt / tau));
+
+        if (env < 1e-4f && gate <= 0.0f) {
+            active = false;
+            return 0.0f;
+        }
+
+        phase += 2.0f * float(M_PI) * baseFreq * dt;
+        if (phase > 2.0f * float(M_PI)) phase -= 2.0f * float(M_PI);
+        float osc = std::sin(phase);
+
+        float ram = 0.0f;
+        for (int k = 1; k <= 4; ++k) {
+            ram += std::sin(float(M_PI) * k * k * t) / float(k);
+        }
+
+        float v = (osc * 0.6f + ram * 0.4f) * env;
+        float out = filter.process(v, t, 900.0f, 400.0f);
+
+        t += dt;
+        return out;
+    }
+};
+
+struct RamanujanDrumBus {
+    float sampleRate = 48000.0f;
+    float t = 0.0f;
+
+    float kickEnv = 0.0f, kickTrig = 0.0f;
+    float hatEnv  = 0.0f, hatTrig  = 0.0f;
+    float snareEnv= 0.0f, snareTrig= 0.0f;
+
+    float hz[2] = {0,0};
+
+    void setSampleRate(float sr) { sampleRate = sr; }
+
+    void triggerKick(float v)  { kickTrig  = v; }
+    void triggerHat(float v)   { hatTrig   = v; }
+    void triggerSnare(float v) { snareTrig = v; }
+
+    float process() {
+        float dt = 1.0f / sampleRate;
+
+        // Kick
+        float kickDecay = 0.18f;
+        if (kickTrig > 0.0f) { kickEnv = kickTrig; kickTrig = 0.0f; }
+        else kickEnv += (0.0f - kickEnv) * (1.0f - std::exp(-dt / kickDecay));
+
+        float baseF = 60.0f;
+        float sweep = 220.0f * std::exp(-t * 40.0f);
+        float fKick = baseF + sweep;
+        float phaseKick = 2.0f * float(M_PI) * fKick * t;
+        float kick = std::sin(phaseKick);
+
+        float ram = 0.0f;
+        for (int k = 1; k <= 3; ++k) {
+            ram += std::sin(float(M_PI) * k * k * t) / (float(k) * 1.5f);
+        }
+        kick = std::tanh((kick + ram * 0.4f) * 3.0f) * kickEnv;
+
+        // Hat
+        float hatDecay = 0.08f;
+        if (hatTrig > 0.0f) { hatEnv = hatTrig; hatTrig = 0.0f; }
+        else hatEnv += (0.0f - hatEnv) * (1.0f - std::exp(-dt / hatDecay));
+
+        float noise = (float(rand()) / RAND_MAX) * 2.0f - 1.0f;
+        float cutoffHat = 8000.0f;
+        float alpha = std::exp(-2.0f * float(M_PI) * cutoffHat * dt);
+        hz[0] = (1.0f - alpha) * noise + alpha * hz[0];
+        hz[1] = (1.0f - alpha) * hz[0] + alpha * hz[1];
+        float hat = (noise - hz[1]) * hatEnv * 0.6f;
+
+        // Snare
+        float snareDecay = 0.22f;
+        if (snareTrig > 0.0f) { snareEnv = snareTrig; snareTrig = 0.0f; }
+        else snareEnv += (0.0f - snareEnv) * (1.0f - std::exp(-dt / snareDecay));
+
+        float snNoise = (float(rand()) / RAND_MAX) * 2.0f - 1.0f;
+        float snRam = std::sin(float(M_PI) * t * 7.0f) +
+                      std::sin(float(M_PI) * t * 11.0f);
+        float snare = std::tanh((snNoise * 0.7f + snRam * 0.3f) * 2.5f) * snareEnv;
+
+        t += dt;
+        return kick + hat + snare;
+    }
+};
+
+struct FountainNoise {
+    float sampleRate = 48000.0f;
+    float t = 0.0f;
+    float z[4] = {0,0,0,0};
+
+    void setSampleRate(float sr) { sampleRate = sr; }
+
+    float process() {
+        float dt = 1.0f / sampleRate;
+
+        float n = (float(rand()) / RAND_MAX) * 2.0f - 1.0f;
+        float ram = std::sin(float(M_PI) * t * 5.0f) * 0.4f +
+                    std::sin(float(M_PI) * t * 11.0f) * 0.2f;
+        float v = (n * 0.6f + ram * 0.4f) * 0.4f;
+
+        float cutoff = 2000.0f + 800.0f * std::sin(t * 0.2f);
+        float omega = 2.0f * float(M_PI) * cutoff / sampleRate;
+
+        for (int s = 0; s < 4; ++s) {
+            float input = (s == 0 ? v : z[s - 1]);
+            z[s] += omega * (std::tanh(input) - std::tanh(z[s]));
+        }
+
+        t += dt;
+        return z[3];
+    }
+};
+
+// ─────────────────────────────────────────────
+// Engine implementation
+// ─────────────────────────────────────────────
+
+enum ParamID {
+    PARAM_MASTER_GAIN = 0,
+    PARAM_FOUNTAIN_LEVEL,
+    PARAM_NPC_NOISE_LEVEL,
+    PARAM_SEQ_ENABLE,
+    PARAM_SEQ_BPM,
+    PARAM_HARMONY_MODE,
+    PARAM_COUNT
+};
+
+class RamanujanSynthEngineImpl : public RamanujanSynthEngine {
+public:
+    RamanujanSynthEngineImpl() {
+        params.resize(PARAM_COUNT);
+        params[PARAM_MASTER_GAIN]   = { PARAM_MASTER_GAIN,   0.8f, 0.0f, 1.0f, "Master Gain" };
+        params[PARAM_FOUNTAIN_LEVEL]= { PARAM_FOUNTAIN_LEVEL,0.7f, 0.0f, 1.0f, "Fountain Level" };
+        params[PARAM_NPC_NOISE_LEVEL]={PARAM_NPC_NOISE_LEVEL,0.5f, 0.0f, 1.0f, "NPC Noise Level" };
+        params[PARAM_SEQ_ENABLE]    = { PARAM_SEQ_ENABLE,    1.0f, 0.0f, 1.0f, "Sequencer Enable" };
+        params[PARAM_SEQ_BPM]       = { PARAM_SEQ_BPM,       100.0f/300.0f, 0.0f, 1.0f, "BPM" };
+        params[PARAM_HARMONY_MODE]  = { PARAM_HARMONY_MODE,  0.0f, 0.0f, 1.0f, "Harmony Mode" };
+
+        voices.resize(maxVoices);
+    }
+
+    void setSampleRate(double sr) override {
+        sampleRate = float(sr);
+        for (auto& v : voices) v.setSampleRate(sampleRate);
+        drum.setSampleRate(sampleRate);
+        fountain.setSampleRate(sampleRate);
+    }
+
+    void setBlockSize(int blockSize) override {
+        (void)blockSize;
+    }
+
+    void setParameter(int id, float normalizedValue) override {
+        if (id < 0 || id >= (int)params.size()) return;
+        params[id].value = std::clamp(normalizedValue, 0.0f, 1.0f);
+    }
+
+    float getParameter(int id) const override {
+        if (id < 0 || id >= (int)params.size()) return 0.0f;
+        return params[id].value;
+    }
+
+    void noteOn(int midiNote, float velocity) override {
+        float freq = 440.0f * std::pow(2.0f, (midiNote - 69) / 12.0f);
+        RamanujanVoice* v = findFreeVoice();
+        if (!v) v = &voices[0];
+        v->noteOn(midiNote, freq, velocity);
+    }
+
+    void noteOff(int midiNote) override {
+        for (auto& v : voices) v.noteOff(midiNote);
+    }
+
+    void allNotesOff() override {
+        for (auto& v : voices) {
+            v.gate = 0.0f;
+            v.env = 0.0f;
+            v.active = false;
+        }
+    }
+
+    void setBpm(float bpm) override {
+        float norm = std::clamp(bpm / 300.0f, 0.0f, 1.0f);
+        setParameter(PARAM_SEQ_BPM, norm);
+    }
+
+    void enableSequencer(bool enabled) override {
+        setParameter(PARAM_SEQ_ENABLE, enabled ? 1.0f : 0.0f);
+    }
+
+    bool loadProgram(const RamanujanProgram& program) override {
+        scenes = program.harmonyScenes;
+        drumKickPattern  = program.drumKickPattern;
+        drumSnarePattern = program.drumSnarePattern;
+        drumHatPattern   = program.drumHatPattern;
+
+        setParameter(PARAM_FOUNTAIN_LEVEL, program.fountainLevel);
+        setParameter(PARAM_NPC_NOISE_LEVEL, program.npcNoiseLevel);
+
+        currentSceneIndex = 0;
+        currentChordIndex = 0;
+        seqStep = 0;
+        return true;
+    }
+
+    void process(float* outL, float* outR, int numSamples) override {
+        if (!outL || !outR) return;
+
+        float master = params[PARAM_MASTER_GAIN].value;
+        float fountainLevel = params[PARAM_FOUNTAIN_LEVEL].value;
+        float seqEnable = params[PARAM_SEQ_ENABLE].value;
+        float bpm = std::clamp(params[PARAM_SEQ_BPM].value * 300.0f, 40.0f, 300.0f);
+
+        float secondsPerBeat = 60.0f / bpm;
+        float secondsPerStep = secondsPerBeat / 4.0f;
+        int samplesPerStep = int(secondsPerStep * sampleRate);
+
+        for (int i = 0; i < numSamples; ++i) {
+            if (seqEnable > 0.5f) {
+                if (seqSampleCounter <= 0) {
+                    seqTick();
+                    seqSampleCounter = samplesPerStep;
+                }
+                --seqSampleCounter;
+            }
+
+            float s = 0.0f;
+
+            for (auto& v : voices) {
+                s += v.process();
+            }
+
+            if (!drumKickPattern.empty()) {
+                s += drum.process();
+            }
+
+            s += fountain.process() * fountainLevel;
+
+            s *= master;
+
+            outL[i] = s;
+            outR[i] = s;
+        }
+    }
+
+    static RamanujanSynthEngine* createInstance() {
+        return new RamanujanSynthEngineImpl();
+    }
+
+private:
+    float sampleRate = 48000.0f;
+    std::vector<RamanujanParameter> params;
+
+    static constexpr int maxVoices = 8;
+    std::vector<RamanujanVoice> voices;
+    RamanujanDrumBus drum;
+    FountainNoise fountain;
+
+    std::vector<HarmonyScene> scenes;
+    int currentSceneIndex = 0;
+    int currentChordIndex = 0;
+
+    std::vector<int> drumKickPattern;
+    std::vector<int> drumSnarePattern;
+    std::vector<int> drumHatPattern;
+
+    int seqStep = 0;
+    int seqSampleCounter = 0;
+
+    RamanujanVoice* findFreeVoice() {
+        for (auto& v : voices) if (!v.active) return &v;
+        return nullptr;
+    }
+
+    void seqTick() {
+        if (scenes.empty()) return;
+        const HarmonyScene& scene = scenes[currentSceneIndex];
+        if (scene.chords.empty()) return;
+
+        const HarmonyChord& chord = scene.chords[currentChordIndex];
+
+        if (!drumKickPattern.empty()) {
+            int idx = seqStep % 16;
+            if (drumKickPattern[idx])  drum.triggerKick(1.0f);
+            if (!drumSnarePattern.empty() && drumSnarePattern[idx]) drum.triggerSnare(0.9f);
+            if (!drumHatPattern.empty()   && drumHatPattern[idx])   drum.triggerHat(0.6f);
+        }
+
+        currentChordIndex = (currentChordIndex + 1) % (int)scene.chords.size();
+        if (currentChordIndex == 0) {
+            currentSceneIndex = (currentSceneIndex + 1) % (int)scenes.size();
+        }
+
+        seqStep = (seqStep + 1) % 16;
+    }
+};
+
+RamanujanSynthEngine* RamanujanSynthEngine::create() {
+    return RamanujanSynthEngineImpl::createInstance();
+}
