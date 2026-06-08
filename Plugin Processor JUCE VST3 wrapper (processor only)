@@ -1,0 +1,27 @@
+// PluginProcessor.h
+#pragma once
+#include <JuceHeader.h>
+#include "RamanujanSynthEngine.hpp"
+
+class RamanujanAudioProcessor : public juce::AudioProcessor {
+public:
+    RamanujanAudioProcessor();
+    ~RamanujanAudioProcessor() override;
+
+    const juce::String getName() const override { return "RamanujanMoog"; }
+    void prepareToPlay(double sampleRate, int samplesPerBlock) override;
+    void releaseResources() override {}
+    bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
+    void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
+
+    juce::AudioProcessorEditor* createEditor() override;
+    bool hasEditor() const override { return true; }
+
+    const juce::String getProgramName(int) override { return {}; }
+    void changeProgramName(int, const juce::String&) override {}
+    void setStateInformation(const void*, int) override {}
+    void getStateInformation(juce::MemoryBlock&) override {}
+
+private:
+    std::unique_ptr<RamanujanSynthEngine> engine;
+};
