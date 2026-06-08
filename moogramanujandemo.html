@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Park Scene — Modulating Ramanujan Moog Harmonic Park</title>
+<style>
+  body { margin: 0; overflow: hidden; background: #000; }
+  #start {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: rgba(0,0,0,0.7);
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 32px;
+    cursor: pointer;
+    z-index: 10;
+    flex-direction: column;
+    gap: 12px;
+  }
+  #hint {
+    font-size: 16px;
+    opacity: 0.8;
+  }
+</style>
+</head>
+<body>
+
+<div id="start">
+  <div>CLICK TO START</div>
+  <div id="hint">1 = Voice, 2 = Pad, 3 = Sequencer toggle</div>
+</div>
+
+<audio id="step" src="https://cdn.pixabay.com/download/audio/2022/03/15/audio_3c1e9d8f3b.mp3?filename=footstep-1-112194.mp3"></audio>
+
+<script src="https://unpkg.com/three@0.158.0/build/three.min.js"></script>
+
+<script>
+(() => {
+
+  const start = document.getElementById("start");
+  let audioCtx = null;
+
+  start.onclick = async () => {
+    start.style.display = "none";
+    document.body.requestPointerLock();
+
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") await audioCtx.resume();
+      initAudioGraph();
+    }
+  };
+
+  document.addEventListener("pointerlockchange", () => {
+    if (document.pointerLockElement !== document.body) {
+      start.style.display = "flex";
+    }
+  });
+
+  // -----------------------------
+  // GLOBAL HARMONY WITH MODULATION
+  // -----------------------------
+  const HARMONY_SCENES = [
+    // Scene 0: A minor world
+    [
+      { name: "Am",   notes: [220, 261.63, 329.63] },   // i
+      { name: "Bdim", notes: [246.94, 293.66, 349.23] },// ii°
+      { name: "Gmaj", notes: [196, 246.94, 293.66] },   // VII
+      { name: "Am",   notes: [220, 261.63, 329.63] }    // i
+    ],
+    // Scene 1: D major ii–V–I (Em7–A7–Dmaj–Dmaj)
+    [
+      { name: "Em7",  notes: [164.81, 196, 246.94] },   // E G B
+      { name: "A7",   notes: [220, 277.18, 329.63] },   // A C# E
+      { name: "Dmaj", notes: [146.83, 184.99, 220] },   // D F# A
+      { name: "Dmaj", notes: [146.83, 184.99, 220] }
+    ],
+    // Scene 2: C Lydian (Cmaj with #4 flavor)
+    [
+      { name: "Cmaj", notes: [261.63, 329.63, 392] },   // C E G
+      { name: "Dmaj", notes: [293.66, 369.99, 440] },   // D F# A
+      { name: "Gmaj", notes: [196, 246.94, 293.66] },   // G B D
+      { name: "Cmaj", notes: [261.63, 329.63, 392] }
+    ]
+  ];
+
+  let currentHarmonyScene = 0;
+  let CHORDS = HARMONY_SCENES[currentHarmonyScene];
+  let currentChordIndex = 0;
+
+  function advanceChord() {
+    currentChordIndex = (currentChordIndex + 1) % CHORDS.length;
+    if (currentChordIndex === 0) {
+      currentHarmonyScene = (currentHarmonyScene + 1) % HARMONY_SCENES.length;
+      CHORDS = HARMONY_SCENES[currentHarmonyScene];
+    }
+  }
+
+  // -----------------------------
+  // AUDIO ENGINE
+  // -----------------------------
+  let masterGain = null;
+  let voice = null;
+  let pad = null;
+  let drums = null;
+  let bass = null;
+  let npcVoice = null;
+  let fountainNoise = null;
+  let synthAnalyser = null;
+  let synthData = null;
+
+  function ramanujanMoogFilter(sample, t, sampleRate) {
+    const cutoff = 900 + 400 * Math.sin(2 * Math.PI * 0.13 * t);
+    const resonance = 0.65;
+    const drive = 1.8;
+    const omega = 2 * Math.PI * cutoff / sampleRate;
+
+    let v = sample;
+
+    if (!ramanujanMoogFilter.z) ramanujanMoogFilter.z = [0, 0, 0, 0];
+    const z = ramanujanMoogFilter.z;
+
+    v = Math.tanh(v * drive);
+
+    for (let s = 0; s < 4; s++) {
+      const input = (s === 0 ? v - resonance * z[3] : z[s - 1]);
+      z[s] += omega * (Math.tanh(input) - Math.tanh(z[s]));
+    }
+
+    const drift = 0.02 * Math.sin(2 * Math.PI * 0.07 * t + z[3] * 0.5);
+    return z[3] + drift;
+  }
+
+  function createRamanujanMoogVoice(context, baseFreq = 220) {
+    const node = context.createScriptProcessor(1024, 0, 1);
+    const sr = context.sampleRate;
+
+    node.baseFreq = baseFreq;
+
+    let t = 0;
+    let phase = 0;
+    let env = 0;
+    let gate = 0;
+
+    node.trigger = (velocity = 1.0) => { gate = velocity; };
+    node.release = () => { gate = 0; };
+
+    node.onaudioprocess = (e) => {
+      const out = e.outputBuffer.getChannelData(0);
+      const dt = 1 / sr;
+
+      for (let i = 0; i < out.length; i++) {
+        const attack = 0.01, release = 0.3;
+        env += (gate - env) * (1 - Math.exp(-dt / (gate ? attack : release)));
+
+        phase += 2 * Math.PI * node.baseFreq * dt;
+        if (phase > 2 * Math.PI) phase -= 2 * Math.PI;
+        const osc = Math.sin(phase);
+
+        let ram = 0;
+        for (let k = 1; k <= 4; k++) {
+          ram += Math.sin(Math.PI * k * k * t) / k;
+        }
+
+        let v = osc * 0.6 + ram * 0.4;
+        v *= env;
+
+        const filtered = ramanujanMoogFilter(v, t, sr);
+        out[i] = filtered;
+        t += dt;
+      }
+    };
+
+    return node;
+  }
+
+  function createZeroCircleInstrument(context, baseFreq = 220) {
+    const node = context.createScriptProcessor(1024, 0, 1);
+    const sr = context.sampleRate;
+
+    node.baseFreq = baseFreq;
+
+    let t = 0;
+    let phases = [0, 0, 0];
+    const detunes = [0.0, 0.01, -0.015];
+    let env = 0;
+    let gate = 0;
+
+    node.trigger = (v = 1.0) => { gate = v; };
+    node.release = () => { gate = 0; };
+
+    node.onaudioprocess = (e) => {
+      const out = e.outputBuffer.getChannelData(0);
+      const dt = 1 / sr;
+
+      for (let i = 0; i < out.length; i++) {
+        const attack = 0.02, release = 0.4;
+        env += (gate - env) * (1 - Math.exp(-dt / (gate ? attack : release)));
+
+        let mix = 0;
+        for (let j = 0; j < phases.length; j++) {
+          const f = node.baseFreq * (1 + detunes[j]);
+          phases[j] += 2 * Math.PI * f * dt;
+          if (phases[j] > 2 * Math.PI) phases[j] -= 2 * Math.PI;
+          mix += Math.sin(phases[j]);
+        }
+        mix /= phases.length;
+
+        const filtered = ramanujanMoogFilter(mix * env, t, sr);
+        out[i] = filtered;
+        t += dt;
+      }
+    };
+
+    return node;
+  }
+
+  function createRamanujanDrumBus(context) {
+    const node = context.createScriptProcessor(1024, 0, 1);
+    const sr = context.sampleRate;
+
+    let t = 0;
+    let kickEnv = 0, kickTrig = 0;
+    let hatEnv = 0,  hatTrig  = 0;
+    let snareEnv = 0, snareTrig = 0;
+
+    node.triggerKick  = (v = 1.0) => { kickTrig  = v; };
+    node.triggerHat   = (v = 1.0) => { hatTrig   = v; };
+    node.triggerSnare = (v = 1.0) => { snareTrig = v; };
+
+    node.onaudioprocess = (e) => {
+      const out = e.outputBuffer.getChannelData(0);
+      const dt = 1 / sr;
+
+      for (let i = 0; i < out.length; i++) {
+        // KICK
+        const kickDecay = 0.18;
+        if (kickTrig > 0) { kickEnv = kickTrig; kickTrig = 0; }
+        else kickEnv += (0 - kickEnv) * (1 - Math.exp(-dt / kickDecay));
+
+        const baseF = 60;
+        const sweep = 220 * Math.exp(-t * 40);
+        const fKick = baseF + sweep;
+        const phaseKick = 2 * Math.PI * fKick * t;
+        let kick = Math.sin(phaseKick);
+
+        let ram = 0;
+        for (let k = 1; k <= 3; k++) {
+          ram += Math.sin(Math.PI * k * k * t) / (k * 1.5);
+        }
+        kick = Math.tanh((kick + ram * 0.4) * 3.0) * kickEnv;
+
+        // HAT
+        const hatDecay = 0.08;
+        if (hatTrig > 0) { hatEnv = hatTrig; hatTrig = 0; }
+        else hatEnv += (0 - hatEnv) * (1 - Math.exp(-dt / hatDecay));
+
+        let noise = (Math.random() * 2 - 1);
+        if (!createRamanujanDrumBus.hz) createRamanujanDrumBus.hz = [0, 0];
+        const hz = createRamanujanDrumBus.hz;
+        const cutoffHat = 8000;
+        const alpha = Math.exp(-2 * Math.PI * cutoffHat * dt);
+        hz[0] = (1 - alpha) * noise + alpha * hz[0];
+        hz[1] = (1 - alpha) * hz[0] + alpha * hz[1];
+        let hat = (noise - hz[1]) * hatEnv * 0.6;
+
+        // SNARE
+        const snareDecay = 0.22;
+        if (snareTrig > 0) { snareEnv = snareTrig; snareTrig = 0; }
+        else snareEnv += (0 - snareEnv) * (1 - Math.exp(-dt / snareDecay));
+
+        let snNoise = (Math.random() * 2 - 1);
+        let snRam = Math.sin(Math.PI * t * 7.0) + Math.sin(Math.PI * t * 11.0);
+        let snare = Math.tanh((snNoise * 0.7 + snRam * 0.3) * 2.5) * snareEnv;
+
+        out[i] = kick + hat + snare;
+        t += dt;
+      }
+    };
+
+    return node;
+  }
+
+  function createFountainNoise(context) {
+    const node = context.createScriptProcessor(1024, 0, 1);
+    const sr = context.sampleRate;
+
+    let t = 0;
+    let z = [0,0,0,0];
+
+    node.onaudioprocess = (e) => {
+      const out = e.outputBuffer.getChannelData(0);
+      const dt = 1 / sr;
+
+      for (let i = 0; i < out.length; i++) {
+        let n = (Math.random() * 2 - 1);
+        let ram = Math.sin(Math.PI * t * 5) * 0.4 +
+                  Math.sin(Math.PI * t * 11) * 0.2;
+        let v = (n * 0.6 + ram * 0.4) * 0.4;
+
+        const cutoff = 2000 + 800 * Math.sin(t * 0.2);
+        const omega = 2 * Math.PI * cutoff / sr;
+
+        for (let s = 0; s < 4; s++) {
+          const input = (s === 0 ? v : z[s - 1]);
+          z[s] += omega * (Math.tanh(input) - Math.tanh(z[s]));
+        }
+
+        out[i] = z[3];
+        t += dt;
+      }
+    };
+
+    return node;
+  }
+
+  function initAudioGraph() {
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.8;
+
+    voice    = createRamanujanMoogVoice(audioCtx, 220);
+    pad      = createZeroCircleInstrument(audioCtx, 110);
+    drums    = createRamanujanDrumBus(audioCtx);
+    bass     = createRamanujanMoogVoice(audioCtx, 110);
+    npcVoice = createRamanujanMoogVoice(audioCtx, 220);
+    fountainNoise = createFountainNoise(audioCtx);
+
+    voice.connect(masterGain);
+    pad.connect(masterGain);
+    drums.connect(masterGain);
+    bass.connect(masterGain);
+    npcVoice.connect(masterGain);
+    fountainNoise.connect(masterGain);
+
+    synthAnalyser = audioCtx.createAnalyser();
+    synthAnalyser.fftSize = 256;
+    synthData = new Uint8Array(synthAnalyser.frequencyBinCount);
+
+    masterGain.connect(synthAnalyser);
+    masterGain.connect(audioCtx.destination);
+  }
+
+  // -----------------------------
+  // SEQUENCER + DRUM GROOVE
+  // -----------------------------
+  let seqRunning = false;
+  let seqBpm = 100;
+  let seqStep = 0;
+  const seqSteps = 16;
+  let seqTimer = null;
+
+  const seqPattern = [
+    { chord: () => CHORDS[0].notes, drum: true },
+    { chord: () => [],              drum: false },
+    { chord: () => CHORDS[1].notes, drum: true },
+    { chord: () => [],              drum: false },
+    { chord: () => CHORDS[2].notes, drum: true },
+    { chord: () => [],              drum: false },
+    { chord: () => CHORDS[3].notes, drum: true },
+    { chord: () => [],              drum: false },
+    { chord: () => [], drum: false },
+    { chord: () => [], drum: false },
+    { chord: () => [], drum: false },
+    { chord: () => [], drum: false },
+    { chord: () => [], drum: false },
+    { chord: () => [], drum: false },
+    { chord: () => [], drum: false },
+    { chord: () => [], drum: false },
+  ];
+
+  const bassPattern = [
+    () => CHORDS[0].notes[0], null,
+    () => CHORDS[1].notes[0], null,
+    () => CHORDS[2].notes[0], null,
+    () => CHORDS[3].notes[0], null,
+    () => CHORDS[0].notes[0], null,
+    () => CHORDS[1].notes[0], null,
+    () => CHORDS[2].notes[0], null,
+    () => CHORDS[3].notes[0], null
+  ];
+
+  const drumPattern = {
+    kick:  [1,0,0,0, 1,0,0,0, 1,0,0,0, 1,0,0,0],
+    snare: [0,0,0,0, 0,1,0,0, 0,0,0,0, 0,1,0,0],
+    hat:   [1,1,1,1, 1,1,1,1, 1,1,1,1, 1,1,1,1]
+  };
+
+  function triggerDrumsForStep(stepIndex) {
+    if (!drums) return;
+    if (drumPattern.kick[stepIndex])  drums.triggerKick(1.0);
+    if (drumPattern.snare[stepIndex]) drums.triggerSnare(0.9);
+    if (drumPattern.hat[stepIndex])   drums.triggerHat(0.6);
+  }
+
+  function seqTick() {
+    const step = seqPattern[seqStep];
+    const chord = step.chord ? step.chord() : [];
+
+    if (chord && chord.length && voice && pad) {
+      const [root, mid] = chord;
+
+      voice.baseFreq = root;
+      voice.trigger(1.0);
+      setTimeout(() => voice && voice.release(), 180);
+
+      pad.baseFreq = mid;
+      pad.trigger(0.9);
+      setTimeout(() => pad && pad.release(), 300);
+    }
+
+    const bassFn = bassPattern[seqStep];
+    if (bass && typeof bassFn === "function") {
+      const bassFreq = bassFn();
+      if (bassFreq) {
+        bass.baseFreq = bassFreq;
+        bass.trigger(0.9);
+        setTimeout(() => bass && bass.release(), 200);
+      }
+    }
+
+    triggerDrumsForStep(seqStep);
+
+    if (seqStep % 4 === 0) advanceChord();
+
+    seqStep = (seqStep + 1) % seqSteps;
+  }
+
+  function startSequencer() {
+    if (seqRunning) return;
+    seqRunning = true;
+    const intervalMs = (60_000 / seqBpm) / 4;
+    seqTimer = setInterval(seqTick, intervalMs);
+  }
+
+  function stopSequencer() {
+    seqRunning = false;
+    if (seqTimer) {
+      clearInterval(seqTimer);
+      seqTimer = null;
+    }
+  }
+
+  document.addEventListener("keydown", e => {
+    if (!audioCtx) return;
+
+    if (e.key === "1" && voice) {
+      voice.trigger(1.0);
+    }
+    if (e.key === "2" && pad) {
+      pad.trigger(0.8);
+    }
+    if (e.key === "3") {
+      if (seqRunning) stopSequencer(); else startSequencer();
+    }
+  });
+
+  document.addEventListener("keyup", e => {
+    if (!audioCtx) return;
+
+    if (e.key === "1" && voice) {
+      voice.release();
+    }
+    if (e.key === "2" && pad) {
+      pad.release();
+    }
+  });
+
+  // -----------------------------
+  // THREE.JS SCENE
+  // -----------------------------
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+
+  const skyGeo = new THREE.SphereGeometry(120, 32, 32);
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    uniforms: {
+      topColor:    { value: new THREE.Color(0x4b0082) },
+      bottomColor: { value: new THREE.Color(0xff8c00) },
+      offset:      { value: 33 },
+      exponent:    { value: 0.6 }
+    },
+    vertexShader: `
+      varying vec3 vWorldPosition;
+      void main() {
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 topColor;
+      uniform vec3 bottomColor;
+      uniform float offset;
+      uniform float exponent;
+      varying vec3 vWorldPosition;
+
+      void main() {
+        float h = normalize(vWorldPosition + offset).y;
+        gl_FragColor = vec4(
+          mix(bottomColor, topColor,
+              max(pow(max(h, 0.0), exponent), 0.0)
+          ),
+          1.0
+        );
+      }
+    `
+  });
+  const skyDome = new THREE.Mesh(skyGeo, skyMat);
+  scene.add(skyDome);
+
+  const pivot = new THREE.Object3D();
+  pivot.position.set(0, 0, 8);
+  scene.add(pivot);
+
+  const camera = new THREE.PerspectiveCamera(
+    60, window.innerWidth / window.innerHeight, 0.1, 200
+  );
+  camera.position.set(0, 2, 0);
+  pivot.add(camera);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.7));
+  const sunLight = new THREE.DirectionalLight(0xfff0c0, 1.2);
+  sunLight.position.set(5, 10, 5);
+  scene.add(sunLight);
+
+  const sunSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(3, 32, 32),
+    new THREE.MeshBasicMaterial({
+      color: 0xffa500,
+      emissive: 0xffa500,
+      emissiveIntensity: 1.5
+    })
+  );
+  sunSphere.position.set(0, 2, -60);
+  scene.add(sunSphere);
+
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(40, 40),
+    new THREE.MeshStandardMaterial({ color: 0x3fa34d })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  scene.add(ground);
+
+  function addTree(x, z) {
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.2, 0.25, 1.4, 12),
+      new THREE.MeshStandardMaterial({ color: 0x8b5a2b })
+    );
+    trunk.position.set(x, 0.7, z);
+    scene.add(trunk);
+
+    const crown = new THREE.Mesh(
+      new THREE.SphereGeometry(0.9, 16, 16),
+      new THREE.MeshStandardMaterial({ color: 0x2ecc71 })
+    );
+    crown.position.set(x, 1.9, z);
+    scene.add(crown);
+  }
+  addTree(-5, -3);
+  addTree(-3, 2);
+  addTree(4, -2);
+  addTree(6, 3);
+
+  const benchSeat = new THREE.Mesh(
+    new THREE.BoxGeometry(3, 0.2, 0.6),
+    new THREE.MeshStandardMaterial({ color: 0xc49b66 })
+  );
+  benchSeat.position.set(0, 0.6, -3);
+  scene.add(benchSeat);
+
+  const benchLegGeo = new THREE.BoxGeometry(0.2, 0.6, 0.2);
+  const benchLegMat = new THREE.MeshStandardMaterial({ color: 0x5c4630 });
+
+  const leg1 = new THREE.Mesh(benchLegGeo, benchLegMat);
+  const leg2 = new THREE.Mesh(benchLegGeo, benchLegMat);
+  leg1.position.set(-1.2, 0.3, -3);
+  leg2.position.set(1.2, 0.3, -3);
+  scene.add(leg1, leg2);
+
+  const fountainBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.5, 1.5, 0.4, 32),
+    new THREE.MeshStandardMaterial({ color: 0xaaaaaa })
+  );
+  fountainBase.position.set(0, 0.2, 0);
+  scene.add(fountainBase);
+
+  const waterGeo = new THREE.CircleGeometry(1.3, 64);
+  const waterMat = new THREE.MeshStandardMaterial({
+    color: 0x4db8ff,
+    metalness: 0.5,
+    roughness: 0.15,
+    transparent: true,
+    opacity: 0.9
+  });
+  const water = new THREE.Mesh(waterGeo, waterMat);
+  water.rotation.x = -Math.PI / 2;
+  water.position.set(0, 0.41, 0);
+  scene.add(water);
+
+  const npcs = [];
+  for (let i = 0; i < 6; i++) {
+    const npc = new THREE.Mesh(
+      new THREE.BoxGeometry(1, 2, 1),
+      new THREE.MeshStandardMaterial({ color: 0xffaa00, emissive: 0x000000, emissiveIntensity: 0 })
+    );
+    npc.position.set(Math.random()*20-10, 1, Math.random()*20-10);
+    npc.dir = Math.random() * Math.PI * 2;
+    npc.lastPos = npc.position.clone();
+    npcs.push(npc);
+    scene.add(npc);
+  }
+
+  const CALLERS = [];
+  const RESPONDERS = [];
+  npcs.forEach((npc, i) => {
+    npc.role = (i % 2 === 0) ? "caller" : "responder";
+    if (npc.role === "caller") CALLERS.push(npc);
+    else RESPONDERS.push(npc);
+  });
+
+  let lastCallMotif = null;
+
+  function makeMotifFromChord(chord) {
+    const [r, m, t] = chord;
+    return [r, m, t, m];
+  }
+
+  function blinkNPC(npc) {
+    const mat = npc.material;
+    mat.emissive.set(0xffffff);
+    mat.emissiveIntensity = 1.0;
+    setTimeout(() => {
+      mat.emissiveIntensity = 0.0;
+    }, 120);
+  }
+
+  function npcProximityNoise(npc, distance) {
+    if (!npcVoice) return;
+    const intensity = Math.max(0, 1 - distance / 6);
+    if (intensity <= 0) return;
+    npcVoice.baseFreq = 80 + Math.random() * 40;
+    npcVoice.trigger(intensity * 0.4);
+    setTimeout(() => npcVoice && npcVoice.release(), 80);
+  }
+
+  let keys = {};
+  let yaw = 0;
+  let pitch = 0;
+  let velocityY = 0;
+  let isGrounded = true;
+  let sprint = false;
+  let crouch = false;
+  let bobTime = 0;
+  let stepCooldown = 0;
+  const stepSound = document.getElementById("step");
+
+  document.addEventListener("keydown", e => {
+    keys[e.key] = true;
+    if (e.key === "Shift")   sprint = true;
+    if (e.key === "Control") crouch = true;
+  });
+  document.addEventListener("keyup", e => {
+    keys[e.key] = false;
+    if (e.key === "Shift")   sprint = false;
+    if (e.key === "Control") crouch = false;
+  });
+
+  document.addEventListener("mousemove", e => {
+    if (document.pointerLockElement !== document.body) return;
+
+    yaw   -= e.movementX * 0.002;
+    pitch -= e.movementY * 0.002;
+
+    const maxPitch = Math.PI / 3;
+    pitch = Math.max(-maxPitch, Math.min(maxPitch, pitch));
+
+    pivot.rotation.y = yaw;
+    camera.rotation.x = pitch;
+    camera.rotation.z = 0;
+  });
+
+  function updateCamera(dt) {
+    const speed = (sprint ? 10 : 5) * dt;
+
+    const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    const right   = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+
+    if (keys["w"]) pivot.position.addScaledVector(forward, -speed);
+    if (keys["s"]) pivot.position.addScaledVector(forward,  speed);
+    if (keys["a"]) pivot.position.addScaledVector(right,   -speed);
+    if (keys["d"]) pivot.position.addScaledVector(right,    speed);
+
+    velocityY -= 20 * dt;
+    if (keys[" "] && isGrounded) {
+      velocityY = 8;
+      isGrounded = false;
+    }
+    camera.position.y += velocityY * dt;
+
+    const baseHeight = crouch ? 1.2 : 2.0;
+    if (camera.position.y < baseHeight) {
+      camera.position.y = baseHeight;
+      velocityY = 0;
+      isGrounded = true;
+    }
+
+    const moving = keys["w"] || keys["a"] || keys["s"] || keys["d"];
+    if (moving && isGrounded) {
+      bobTime += dt * (sprint ? 12 : 8);
+      camera.position.y += Math.sin(bobTime) * 0.03;
+    }
+
+    if (moving && isGrounded) {
+      stepCooldown -= dt;
+      if (stepCooldown <= 0) {
+        stepSound.currentTime = 0;
+        stepSound.play();
+        stepCooldown = sprint ? 0.25 : 0.45;
+      }
+    }
+
+    pivot.position.y = 0;
+
+    const playerPos = pivot.position;
+
+    for (const npc of npcs) {
+      npc.position.x += Math.sin(npc.dir) * 0.02;
+      npc.position.z += Math.cos(npc.dir) * 0.02;
+      if (Math.random() < 0.01) npc.dir += (Math.random() - 0.5);
+
+      const dist = npc.position.distanceTo(npc.lastPos);
+      const distToPlayer = npc.position.distanceTo(playerPos);
+
+      npcProximityNoise(npc, distToPlayer);
+
+      if (dist > 0.15 && npcVoice && audioCtx) {
+        npc.lastPos.copy(npc.position);
+        const chord = CHORDS[currentChordIndex].notes;
+
+        if (npc.role === "caller") {
+          const motif = makeMotifFromChord(chord);
+          lastCallMotif = motif;
+
+          motif.forEach((note, idx) => {
+            setTimeout(() => {
+              if (!npcVoice) return;
+              blinkNPC(npc);
+              npcVoice.baseFreq = note;
+              npcVoice.trigger(0.7);
+              setTimeout(() => npcVoice && npcVoice.release(), 100);
+            }, idx * 120);
+          });
+
+        } else if (npc.role === "responder" && lastCallMotif) {
+          const motif = [...lastCallMotif].reverse();
+          motif.forEach((note, idx) => {
+            setTimeout(() => {
+              if (!npcVoice) return;
+              blinkNPC(npc);
+              npcVoice.baseFreq = note * 0.5;
+              npcVoice.trigger(0.6);
+              setTimeout(() => npcVoice && npcVoice.release(), 100);
+            }, 200 + idx * 140);
+          });
+        }
+      }
+    }
+  }
+
+  let last = performance.now();
+  function animate() {
+    const now = performance.now();
+    const dt = (now - last) / 1000;
+    last = now;
+
+    updateCamera(dt);
+
+    let level = 0;
+    if (synthAnalyser && synthData) {
+      synthAnalyser.getByteFrequencyData(synthData);
+      let sum = 0;
+      for (let i = 0; i < synthData.length; i++) sum += synthData[i];
+      level = sum / (synthData.length * 255);
+    }
+
+    water.material.opacity = 0.7 + level * 0.3;
+
+    const npcColor = new THREE.Color().setHSL(0.08 + 0.1 * level, 1.0, 0.5);
+    for (const npc of npcs) {
+      npc.material.color.copy(npcColor);
+    }
+
+    sunLight.intensity = 1.0 + level * 1.2;
+    skyMat.uniforms.exponent.value = 0.6 + level * 0.4;
+
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+  }
+  animate();
+
+})();
+</script>
+
+</body>
+</html>
