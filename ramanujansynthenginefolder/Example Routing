@@ -1,0 +1,14 @@
+modMatrix.push_back({
+    &lfo1,
+    {
+        { &filterCutoff,  300.0f },   // LFO1 → Filter cutoff
+        { &sceneIndexF,   0.2f },     // LFO1 → Harmony scene morph
+    }
+});
+
+modMatrix.push_back({
+    &lfo2,
+    {
+        { &drumDensity,   0.5f },     // LFO2 → Drum density
+    }
+});
