@@ -1,0 +1,8 @@
+void applyModMatrix() {
+    for (auto& route : modMatrix) {
+        float mod = route.source->process();
+        for (auto& dest : route.destinations) {
+            *(dest.target) += mod * dest.depth;
+        }
+    }
+}
