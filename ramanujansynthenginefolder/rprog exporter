@@ -1,0 +1,28 @@
+function exportRProg() {
+  const program = {
+    programName: "Harmonic Park Export",
+    harmonyScenes: HARMONY_SCENES.map((scene, si) => ({
+      name: scene.name || `Scene ${si}`,
+      chords: scene.map(ch => ({
+        name: ch.name || "Chord",
+        notes: ch.notes
+      }))
+    })),
+    drumKickPattern:  drumPattern.kick.slice(0, 16),
+    drumSnarePattern: drumPattern.snare.slice(0, 16),
+    drumHatPattern:   drumPattern.hat.slice(0, 16),
+    fountainLevel: 0.7,
+    npcNoiseLevel: 0.5
+  };
+
+  const json = JSON.stringify(program, null, 2);
+  console.log("RPROG EXPORT:\n", json);
+
+  const blob = new Blob([json], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "harmonic_park.rprog";
+  a.click();
+  URL.revokeObjectURL(url);
+}
