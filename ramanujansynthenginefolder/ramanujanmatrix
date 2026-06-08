@@ -1,0 +1,24 @@
+struct RamanujanLFO {
+    float phase = 0.0f;
+    float rateHz = 1.0f;
+    float sampleRate = 48000.0f;
+
+    void setSampleRate(float sr) { sampleRate = sr; }
+
+    float process() {
+        float dt = 1.0f / sampleRate;
+        phase += rateHz * dt;
+        if (phase > 1.0f) phase -= 1.0f;
+        return std::sin(phase * juce::MathConstants<float>::twoPi);
+    }
+};
+
+struct ModDestination {
+    float* target;   // pointer to DSP parameter
+    float depth;     // modulation depth
+};
+
+struct ModRouting {
+    RamanujanLFO* source;
+    std::vector<ModDestination> destinations;
+};
